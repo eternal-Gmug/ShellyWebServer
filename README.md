@@ -7,6 +7,7 @@ This is a self-developed C++ Web server based on the Linux system, which impleme
 ├── bin/                 # 单模块构建产物输出（可选），CMake构建生成在build文件夹下
 ├── build/               # CMake 构建目录
 ├── conf/                # 运行时配置文件
+├── docs/                # 模块技术说明文档
 ├── include/             # 全局对外头文件（按模块划分）
 ├── resources/           # 前端静态资源（HTML/CSS/JS）
 ├── scripts/             # 辅助脚本
