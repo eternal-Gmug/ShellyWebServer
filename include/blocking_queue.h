@@ -6,6 +6,7 @@
 #include <mutex>
 #include <condition_variable>
 #include <chrono>
+#include <stdexcept>
 #include "utils/lock/lock.h"
 
 template <typename T>
@@ -20,6 +21,7 @@ public:
         }
         m_capacity = capacity;
         m_array = new T[m_capacity];
+        m_closed = false;
         m_size = 0;
         m_head = -1;
         m_tail = -1;
@@ -27,12 +29,22 @@ public:
 
     ~BlockingQueue()
     {
+        
         m_mtx.lock();
         if (m_array != nullptr)
         {
             delete[] m_array;
         }
         m_mtx.unlock();
+    }
+
+    // close queue and notify all sleeping threads to consume the remaining items
+    void close()
+    {
+        m_mtx.lock();
+        m_closed = true;
+        m_mtx.unlock();
+        m_cv.broadcast();
     }
 
     // clear the blocking queue to original status
@@ -119,16 +131,16 @@ public:
         m_mtx.lock();
         if (m_size >= m_capacity)
         {
-            m_cv.broadcast();
             m_mtx.unlock();
+            // m_cv.broadcast();
             return false;
         }
         m_tail = (m_tail + 1) % m_capacity;
         m_array[m_tail] = item;
         m_size++;
+        m_mtx.unlock();
         // notify one thread to consume this queue
         m_cv.signal();
-        m_mtx.unlock();
         return true;
     }
 
@@ -138,20 +150,32 @@ public:
         std::unique_lock<std::mutex> m_ul(m_mtx.get());
         // if queue is empty, wait util having item
         m_cv.wait(m_ul, [this]()
-                  { return m_size > 0; });
+                  { return m_size > 0 || m_closed; });
+        // if the thread is awakened, you should check whether the current queue is still active
+        if (m_closed && m_size == 0)
+        {
+            return false;
+        }
         m_head = (m_head + 1) % m_capacity;
         item = m_array[m_head];
         m_size--;
         return true;
     }
 
-    // consume item with timeout
+    // consume item with timeout,
     bool pop(T &item, int time_ms)
     {
         std::unique_lock<std::mutex> m_ul(m_mtx.get());
         // if queue is empty, wait util having item
         // if timeout, it will return false
-        if (!m_cv.timewait(m_ul, time_ms))
+        if (!m_cv.timewait(m_ul, time_ms, [this]()
+                           { return m_size > 0 || m_closed; }))
+        {
+            // timeout, no data and no close, real timeout!
+            return false;
+        }
+        // before the timeout, you should check the queue's status too
+        if (m_closed && m_size == 0)
         {
             return false;
         }
@@ -167,6 +191,7 @@ private:
     int m_head;
     int m_tail;
     int m_size;
+    bool m_closed; // closing flag, used to sign queue's status
     Lock m_mtx;
     Cond m_cv;
 };

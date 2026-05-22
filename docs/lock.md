@@ -37,21 +37,35 @@ Lock lock;
 ### Cond
 - 典型用途：线程间等待与通知。
 - `wait()`：无超时等待。
-- `timewait()`：超时等待，单位为毫秒。
+- `timewait(lock, time_ms)`：超时等待（无谓词），单位为毫秒。返回 `true` 表示未被超时唤醒，**但调用方需自行检查共享状态**，因为虚假唤醒也可能返回 `true`。
+- `timewait(lock, time_ms, pred)`：带谓词的超时等待（模板重载）。仅在谓词满足时返回 `true`，超时时返回 `false`。**推荐在多线程场景下优先使用此版本**，可自动处理虚假唤醒。
 - `signal()`：唤醒一个等待线程。
 - `broadcast()`：唤醒所有等待线程。
 
-示例：
+> **通知顺序建议**：`signal()`/`broadcast()` 应放在锁释放之后调用，避免被唤醒的线程立即因拿不到锁而再次阻塞（减少无效调度）。
+
+示例（谓词版）：
 ```cpp
 Lock lock;
 Cond cond;
 bool ready = false;
 
-// 等待线程
+// 等待线程（谓词版，自动处理虚假唤醒）
 {
   std::unique_lock<std::mutex> lk(lock.get());
-  while (!ready) {
-    cond.wait(lk);
+  cond.wait(lk, [&]{ return ready; });
+}
+
+// 超时等待线程（谓词版）
+{
+  std::unique_lock<std::mutex> lk(lock.get());
+  if (cond.timewait(lk, 5000, [&]{ return ready; }))
+  {
+    // 条件满足
+  }
+  else
+  {
+    // 超时
   }
 }
 
@@ -66,4 +80,5 @@ cond.signal();
 ## 约定与注意事项
 - `Sem::wait()` 可能阻塞，调用方需确保在退出路径上成对调用 `post()`。
 - `Cond::timewait()` 以毫秒为单位，适合短时间等待的场景。
-- 条件变量等待请搭配明确的共享状态条件，实现中重载了等待函数的模板谓词版本，避免虚假唤醒带来的逻辑错误。
+- 条件变量等待请搭配明确的共享状态条件。`Cond` 提供了带谓词模板的 `wait()` 和 `timewait()` 重载，可自动规避虚假唤醒，推荐优先使用谓词版本。
+- 通知操作（`signal`/`broadcast`）建议放在 `unlock()` 之后，减少被唤醒线程的无效锁竞争。

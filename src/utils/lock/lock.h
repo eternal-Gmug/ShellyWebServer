@@ -86,10 +86,11 @@ public:
         m_cv.wait(lock, pred);
     }
 
-    bool timewait(std::unique_lock<std::mutex> &lock, int time_ms)
+    template <class Predicate>
+    bool timewait(std::unique_lock<std::mutex> &lock, int time_ms, Predicate pred)
     {
-        // set an expiration time to wait for the resource. If the time expires, return false.
-        return m_cv.wait_for(lock, std::chrono::milliseconds(time_ms)) != std::cv_status::timeout;
+        // set an expiration time to wait for the resource. If the time expires or not satisfy pred, return false.
+        return m_cv.wait_for(lock, std::chrono::milliseconds(time_ms), pred);
     }
 
     void signal()
