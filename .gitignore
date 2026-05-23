@@ -71,6 +71,7 @@ Testing/
 # Single Module Produce
 .vscode/
 bin/
+scripts/log_selftest
 
 # log outputs
 serverlogs*/

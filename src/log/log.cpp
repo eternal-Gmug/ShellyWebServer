@@ -194,15 +194,13 @@ void Log::write_log(int level, const char *format, ...)
     }
 
     // 4. convert the current time to normal format and write it into the buffer
-    auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                      now.time_since_epoch()) %
-                  1000;
+    auto now_micro = now.time_since_epoch() % 1000000;
     // return the byte nums
     int n = snprintf(m_buf.get(), log_buffer_size - 1,
-                     "%d-%02d-%02d %02d:%02d:%02d.%03ld %s ",
+                     "%d-%02d-%02d %02d:%02d:%02d.%06ld %s ",
                      my_tm.tm_year + 1900, my_tm.tm_mon + 1, my_tm.tm_mday,
                      my_tm.tm_hour, my_tm.tm_min, my_tm.tm_sec,
-                     now_ms.count(), s);
+                     now_micro.count(), s);
 
     // 5. concatenating user formatted content
     va_list args;
