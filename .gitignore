@@ -71,3 +71,6 @@ Testing/
 # Single Module Produce
 .vscode/
 bin/
+
+# log outputs
+serverlogs*/
