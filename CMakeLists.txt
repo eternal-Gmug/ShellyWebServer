@@ -36,6 +36,7 @@ function(link_module_deps TARGET)
 endfunction()
 
 add_module(concurrency)
+add_module(database)
 add_module(http)
 add_module(limit)
 add_module(log)
@@ -46,11 +47,12 @@ add_module(services)
 add_module(timer)
 add_module(utils)
 
-add_executable(shelly_webserver "${SRC_DIR}/main.cpp")
+add_executable(shelly_webserver "${SRC_DIR}/main.cpp"
+	include/sql_connection_pool.h)
 target_include_directories(shelly_webserver PRIVATE ${INCLUDE_DIR} ${SRC_DIR})
 target_link_libraries(shelly_webserver PRIVATE server)
 
-link_module_deps(server router http net concurrency timer log utils limit services)
+link_module_deps(server router http net concurrency database timer log utils limit services)
 link_module_deps(router http services)
 link_module_deps(http net utils log)
 link_module_deps(net concurrency utils)
@@ -59,3 +61,19 @@ link_module_deps(limit utils log)
 link_module_deps(services utils)
 link_module_deps(concurrency utils)
 link_module_deps(log utils)
+
+# unit and integration tests (temporary test)(if needed)
+add_executable(sql_connection_pool_selftest
+    scripts/sql_connection_pool_selftest.cpp
+)
+
+target_include_directories(sql_connection_pool_selftest PRIVATE
+    ${INCLUDE_DIR}
+    ${SRC_DIR}
+)
+
+target_link_libraries(sql_connection_pool_selftest PRIVATE
+    database
+    log
+    mysqlclient
+)

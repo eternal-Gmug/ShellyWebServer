@@ -9,6 +9,7 @@
 class Sem
 {
 public:
+    // constructor with explicit keyword to prevent implicit conversions, which can lead to unexpected behavior
     explicit Sem(int num = 0) : m_count(num) {}
     ~Sem() = default;
 

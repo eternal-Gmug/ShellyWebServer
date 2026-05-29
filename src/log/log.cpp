@@ -98,6 +98,13 @@ bool Log::init(const char *dir_path, int close_sign, int log_buffer_size, int lo
 
 void Log::write_log(int level, const char *format, ...)
 {
+    // Defensive: if init() was never called, silently drop the log.
+    // Calling snprintf on a null m_buf would segfault.
+    if (m_buf == nullptr || m_fp == nullptr)
+    {
+        return;
+    }
+
     // 1. get current time
     auto now = std::chrono::system_clock::now();
     time_t t = std::chrono::system_clock::to_time_t(now);

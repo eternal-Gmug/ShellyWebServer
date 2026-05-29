@@ -14,6 +14,7 @@ This is a self-developed C++ Web server based on the Linux system, which impleme
 ├── src/                 # 服务端源码
 │   ├── main.cpp         # 程序入口
 │   ├── concurrency/     # 线程池/协程池与并发控制
+│   ├── database/        # 数据库连接池
 │   ├── http/            # HTTP 解析与响应构建
 │   ├── limit/           # 限流与连接控制
 │   ├── log/             # 日志系统

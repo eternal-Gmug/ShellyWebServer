@@ -75,3 +75,6 @@ scripts/log_selftest
 
 # log outputs
 serverlogs*/
+
+# environment files
+.env
