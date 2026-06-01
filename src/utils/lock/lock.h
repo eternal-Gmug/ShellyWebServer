@@ -10,18 +10,23 @@ class Sem
 {
 public:
     // constructor with explicit keyword to prevent implicit conversions, which can lead to unexpected behavior
-    explicit Sem(int num = 0) : m_count(num) {}
+    explicit Sem(int num = 0) : m_count(num) { m_shutdown = false; }
     ~Sem() = default;
 
     // P operation: wait and consume resource
-    void wait()
+    bool wait()
     {
         std::unique_lock<std::mutex> lock(m_mutex);
         // wait until there is at least one resource available
         m_cv.wait(lock, [this]()
-                  { return m_count > 0; });
+                  { return m_count > 0 || m_shutdown; });
+        if (m_shutdown)
+        {
+            return false; // if shutdown, return false to indicate failure
+        }
         // get resource successfully, m_count - 1
         m_count--;
+        return true;
     }
 
     // V operation: release and give back resource
@@ -36,8 +41,19 @@ public:
         m_cv.notify_one();
     }
 
+    // broadcast to unblock all waiting threads, used for shutdown
+    void shutdown()
+    {
+        {
+            std::unique_lock<std::mutex> lock(m_mutex);
+            m_shutdown = true; // set shutdown flag to true to unblock all waiting threads
+        }
+        m_cv.notify_all(); // wake up all waiting threads
+    }
+
 private:
     int m_count;
+    bool m_shutdown;
     std::mutex m_mutex;
     std::condition_variable m_cv;
 };
