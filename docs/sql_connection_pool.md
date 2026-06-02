@@ -84,27 +84,32 @@ POOL_LOG_INFO(pool, ...)
 ```
 init(url, user, pass, db, port, max_conn, log_flag)
  │
+ ├─ m_destroyed = false     ← 重置销毁标志，支持重新初始化（修复项）
  ├─ 保存连接参数到成员变量
  ├─ for i in [0, max_conn):
  │    └─ createConnection()  ← 单次建连（含三层重试）
  │         ├─ 成功 → push 到 connQue, m_FreeConn++
- │         └─ 失败 → DestroyPool() + return false
+ │         └─ 失败 → 清理已建连接 + return false（m_destroyed 保持 false）
  │
- ├─ reserve = std::make_unique<Sem>(m_FreeConn)
+ ├─ reserve = std::make_unique<Sem>(m_FreeConn)  ← 创建全新信号量，覆盖旧 shutdown 态
  └─ return true
 ```
 
 关键点：
 - 初始化是**全量**的：max_conn 条连接必须全部建成功才返回 `true`，任何一条失败则整体失败并销毁已建连接
 - 信号量在**所有连接入队之后**才创建，避免 `GetConnection()` 在初始化完成前被唤醒
+- **`m_destroyed` 重置**：`init()` 开头将 `m_destroyed` 置为 `false`，这使得单例池在 `DestroyPool()` 后可以再次 `init()` 复用。若 `init()` 中途失败则 `m_destroyed` 保持 `false`（未调用 `DestroyPool()` 设置它），允许重试
 
 ### 借出连接 (GetConnection)
 
 ```
-GetConnection()
+GetConnection(time_ms)
  │
- ├─ reserve->wait()        ← 信号量 P 操作，无空闲则阻塞
- ├─ lock.lock()            ← 获取互斥锁
+ ├─ reserve->timewait(time_ms)   ← 信号量 P 操作，无空闲则阻塞/超时
+ │    └─ 超时或 shutdown → return nullptr
+ ├─ lock.lock()                  ← 获取互斥锁
+ ├─ if m_destroyed              ← 二次确认：防止在 wait→lock 窗口期间池被销毁
+ │    └─ unlock + reserve->post() + return nullptr
  ├─ conn = connQue.front()
  ├─ connQue.pop()
  ├─ m_FreeConn--, m_CurConn++
@@ -113,8 +118,9 @@ GetConnection()
 ```
 
 关键点：
-- `reserve->wait()` 在锁外调用：如果先持锁再 wait，其他线程无法 `ReleaseConnection()` → 死锁
-- `wait()` 返回后立即持锁取队列：防止 wait→lock 之间的 TOCTOU 竞态
+- `reserve->timewait()` 在锁外调用：如果先持锁再 wait，其他线程无法 `ReleaseConnection()` → 死锁
+- `timewait()` 返回后立即持锁取队列：防止 wait→lock 之间的 TOCTOU 竞态
+- **`m_destroyed` 二次确认**：持锁后再次检查销毁标志。`reserve->timewait()` 可能因 `shutdown()` 被唤醒返回 `false`，也可能因正常 `post()` 唤醒但在 `lock` 之前池被销毁——此时需要将信号量计数归还（`reserve->post()`）并返回 `nullptr`
 
 ### 归还连接 (ReleaseConnection)
 
@@ -169,16 +175,50 @@ createConnection()
 ```
 DestroyPool()
  │
+ ├─ if reserve: reserve->shutdown()  ← 通知所有阻塞在 timewait/wait 的线程退出
  ├─ lock.lock()
+ ├─ m_destroyed = true              ← 设置销毁标志，阻止新的 GetConnection
  ├─ while connQue 非空:
  │    ├─ mysql_close(connQue.front())
  │    └─ connQue.pop()
  ├─ m_CurConn = 0, m_FreeConn = 0
- ├─ reserve.reset()    ← 销毁信号量
  └─ lock.unlock()
 ```
 
-关键点：销毁后 `reserve` 为 `nullptr`，任何后续 `GetConnection()` 会因空指针崩溃——调用方必须保证销毁后不再借还。
+关键点：
+- `DestroyPool()` **不会** `reserve.reset()`：`reserve` 仍然指向一个 `shutdown` 状态的 `Sem` 对象，`reset()` 仅在析构函数 `~connection_pool()` 中执行
+- `reserve->shutdown()` 在持锁之前调用：避免持锁期间通知等待线程导致的调度开销
+- 销毁后再次 `init()` 时，`std::make_unique<Sem>(m_FreeConn)` 会创建全新信号量覆盖旧对象，因此 `Sem` 的 `m_shutdown` 不可逆不是问题
+- 正在借出（已被 `GetConnection` 弹出队列）的连接不会被 `DestroyPool` 关闭，调用方需自行释放
+
+### 生命周期与重新初始化
+
+`connection_pool` 是单例，但在服务器运行期间可能需要多次初始化和销毁（如配置热更新、数据库切换）。这依赖 `m_destroyed` 原子标志的正确管理：
+
+| 生命周期事件 | `m_destroyed` 状态 | `reserve` 状态 | 行为 |
+|-------------|-------------------|----------------|------|
+| 首次构造 | `false`（成员初始化器） | `nullptr` | 就绪，等待 `init()` |
+| `init()` 成功 | `false` | 指向新 `Sem` | 正常运行 |
+| `init()` 失败 | `false` | `nullptr` | 可重试 `init()` |
+| `DestroyPool()` | `true` | 指向 shutdown 态 `Sem` | 拒绝所有借出 |
+| 再次 `init()` | `false`（`init()` 开头重置） | 指向新 `Sem`（覆盖旧对象） | 恢复正常运行 |
+
+> **修复项**：最初实现中 `init()` 缺少 `m_destroyed = false` 重置，导致 `DestroyPool()` → `init()` 后 `GetConnection()` 永久返回 `nullptr`。表现为单例池只能使用一次，第二次 `init()` 虽成功建连但所有借出操作被 `m_destroyed` 守卫拦截。
+
+### 连接健康检查替换失败的容量缩减
+
+归还连接时若 `mysql_ping` 失败，池会尝试创建替代连接。若替代创建也失败：
+
+```
+ReleaseConnection(conn) — conn 不健康
+ │
+ ├─ mysql_close(conn)
+ ├─ replacement = createConnection()
+ │    └─ 失败 → lock → m_CurConn--  → unlock → return false
+ │              ↑ m_FreeConn 未增，信号量未 post
+```
+
+此时池的实际容量 **静默缩减 1**：`m_CurConn` 减少但信号量计数未恢复，导致后续 `GetConnection()` 可能因信号量耗尽而超时，即使 `connQue` 中仍有连接。这是一个已知边界缺陷，触发条件为数据库完全不可达（所有新建连尝试均失败）。
 
 ---
 

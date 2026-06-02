@@ -13,10 +13,11 @@ connection_pool &connection_pool::GetInstance()
 }
 
 // init the connection pool, create the specified number of connections and add them to the pool
-bool connection_pool::init(std::string url, std::string user, std::string password, std::string database_name, int port, int max_conn, int log_flag)
+bool connection_pool::init(const std::string &url, const std::string &user, const std::string &password, const std::string &database_name, unsigned int port, int max_conn, int log_flag)
 {
+    m_destroyed.store(false, std::memory_order_release); // reset destroyed flag in case of re-init after destroy
     m_url = url;
-    m_port = std::to_string(port); // a small discovery: port number can also be strings
+    m_port = port;
     m_user = user;
     m_pass = password;
     m_name = database_name;
@@ -29,7 +30,12 @@ bool connection_pool::init(std::string url, std::string user, std::string passwo
         if (con == nullptr)
         {
             POOL_LOG_ERROR(this, "Failed to initialize connection %d/%d, aborting pool init", i + 1, max_conn);
-            DestroyPool();
+            while (!connQue.empty())
+            {
+                mysql_close(connQue.front());
+                connQue.pop();
+            }
+            m_FreeConn = 0;
             return false;
         }
         connQue.push(con);
@@ -44,15 +50,26 @@ bool connection_pool::init(std::string url, std::string user, std::string passwo
 }
 
 // when there is a request for a connection, the pool will check if there are free connections available. If there are, it will return one of the free connections and update the counts accordingly. If there are no free connections, it will block until a connection is released back to the pool.
-MYSQL *connection_pool::GetConnection()
+MYSQL *connection_pool::GetConnection(int time_ms)
 {
     // if (connQue.empty())
     // {
     //     LOG_WARN("No free connections available");
     //     return nullptr;
     // }
-    reserve->wait(); // wait until there is a free connection
+    if (!reserve->timewait(time_ms))
+    {
+        POOL_LOG_WARN(this, "GetConnection timed out after %dms", time_ms);
+        return nullptr;
+    }
     lock.lock();
+    if (m_destroyed.load(std::memory_order_acquire))
+    {
+        lock.unlock();
+        reserve->post();
+        POOL_LOG_WARN(this, "Connection pool has been destroyed, cannot acquire connection");
+        return nullptr;
+    }
     MYSQL *conn = connQue.front();
     connQue.pop();
     m_FreeConn--;
@@ -69,6 +86,13 @@ bool connection_pool::ReleaseConnection(MYSQL *conn)
         POOL_LOG_WARN(this, "Attempted to release a null connection");
         return false;
     }
+    // if connection pool is destroyed, close the connection directly without adding it back to the pool
+    if (m_destroyed.load(std::memory_order_acquire))
+    {
+        mysql_close(conn);
+        POOL_LOG_WARN(this, "Connection pool has been destroyed, closing released connection directly");
+        return true;
+    }
     // health check, if the connection is not healthy, discard it and create a replacement
     if (mysql_ping(conn) != 0)
     {
@@ -79,6 +103,9 @@ bool connection_pool::ReleaseConnection(MYSQL *conn)
         if (replacement == nullptr)
         {
             POOL_LOG_ERROR(this, "Failed to create replacement connection, pool capacity reduced");
+            lock.lock();
+            m_CurConn--; // decrease current connection count since the unhealthy connection is discarded and no replacement is added
+            lock.unlock();
             return false;
         }
 
@@ -87,7 +114,6 @@ bool connection_pool::ReleaseConnection(MYSQL *conn)
         m_FreeConn++;
         m_CurConn--;
         lock.unlock();
-
         reserve->post();
         POOL_LOG_INFO(this, "Replacement connection created and released to pool, free: %d, cur: %d", m_FreeConn, m_CurConn);
         return true;
@@ -105,7 +131,10 @@ bool connection_pool::ReleaseConnection(MYSQL *conn)
 
 int connection_pool::GetFreeConn()
 {
-    return m_FreeConn;
+    lock.lock();
+    int freeconn_snapshot = m_FreeConn;
+    lock.unlock();
+    return freeconn_snapshot;
 }
 
 // create a single MySQL connection with retry logic
@@ -132,7 +161,7 @@ MYSQL *connection_pool::createConnection()
 
         MYSQL *result = mysql_real_connect(con, m_url.c_str(), m_user.c_str(),
                                            m_pass.c_str(), m_name.c_str(),
-                                           std::stoi(m_port), nullptr, 0);
+                                           m_port, nullptr, 0);
         if (result != nullptr)
         {
             return con; // success
@@ -155,7 +184,12 @@ MYSQL *connection_pool::createConnection()
 
 void connection_pool::DestroyPool()
 {
+    if (reserve)
+    {
+        reserve->shutdown(); // unblock all waiting threads to prevent deadlock during shutdown
+    }
     lock.lock();
+    m_destroyed.store(true, std::memory_order_release); // set destroyed flag to true to prevent further operations on the pool
     while (!connQue.empty())
     {
         MYSQL *conn = connQue.front();
@@ -164,7 +198,6 @@ void connection_pool::DestroyPool()
     }
     m_CurConn = 0;
     m_FreeConn = 0;
-    reserve.reset(); // destroy the semaphore
     lock.unlock();
 }
 
