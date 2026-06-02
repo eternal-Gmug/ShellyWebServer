@@ -31,7 +31,9 @@ Log::~Log()
     // 3. close file safely
     if (m_fp != nullptr)
     {
+        m_mtx.lock();
         fclose(m_fp);
+        m_mtx.unlock();
     }
     // m_buf、m_log_queue、m_async_thread could be managed by unqiue pointer
 }
@@ -54,24 +56,17 @@ bool Log::init(const char *dir_path, int close_sign, int log_buffer_size, int lo
     dir_name[sizeof(dir_name) - 1] = '\0';
     mkdir(dir_name, 0755); // ensure base directory exists
 
-    // ---- 1. async mode setup ----
-    if (log_queue_size > 0)
-    {
-        m_is_async = true;
-        m_log_queue = std::make_unique<BlockingQueue<std::string>>(log_queue_size);
-        m_async_thread = std::make_unique<std::thread>(&Log::async_write_log, this);
-    }
-
     this->close_sign = close_sign;
     this->log_buffer_size = log_buffer_size;
     m_buf = std::make_unique<char[]>(this->log_buffer_size);
     memset(m_buf.get(), '\0', this->log_buffer_size);
     this->log_max_lines = log_max_lines;
 
-    // ---- 2. build date folder & hourly log file path ----
+    // ---- 1. build date folder & hourly log file path ----
     auto now = std::chrono::system_clock::now();
     time_t t = std::chrono::system_clock::to_time_t(now);
-    struct tm my_tm = *localtime(&t);
+    struct tm my_tm;
+    localtime_r(&t, &my_tm);
 
     // dir_name/yyyy_mm_dd_logs/
     char date_dir[256] = {0};
@@ -87,11 +82,19 @@ bool Log::init(const char *dir_path, int close_sign, int log_buffer_size, int lo
     this->m_today = my_tm.tm_yday;
     this->m_hour = my_tm.tm_hour;
 
-    // ---- 3. open file ----
+    // ---- 2. open file ----
     this->m_fp = fopen(log_full_name, "a");
     if (this->m_fp == nullptr)
     {
         return false;
+    }
+
+    // ---- 3. async mode setup ----
+    if (log_queue_size > 0)
+    {
+        m_is_async = true;
+        m_log_queue = std::make_unique<BlockingQueue<std::string>>(log_queue_size);
+        m_async_thread = std::make_unique<std::thread>(&Log::async_write_log, this);
     }
     return true;
 }
@@ -108,8 +111,8 @@ void Log::write_log(int level, const char *format, ...)
     // 1. get current time
     auto now = std::chrono::system_clock::now();
     time_t t = std::chrono::system_clock::to_time_t(now);
-    // TODO: localtime is thread-safety issue
-    struct tm my_tm = *localtime(&t);
+    struct tm my_tm;
+    localtime_r(&t, &my_tm); // use localtime_r to avoid thread safety issue
 
     // 2. ensure current signal head
     char s[16] = {0};
@@ -264,7 +267,9 @@ void Log::async_write_log()
     while (m_log_queue->pop(single_log))
     {
         m_mtx.lock();
-        fputs(single_log.c_str(), m_fp);
+        if(m_fp){
+            fputs(single_log.c_str(), m_fp);
+        }
         m_mtx.unlock();
     }
 }

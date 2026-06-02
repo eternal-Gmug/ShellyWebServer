@@ -77,3 +77,17 @@ target_link_libraries(sql_connection_pool_selftest PRIVATE
     log
     mysqlclient
 )
+
+add_executable(log_selftest
+    scripts/log_selftest.cpp
+)
+
+target_include_directories(log_selftest PRIVATE
+    ${INCLUDE_DIR}
+    ${SRC_DIR}
+)
+
+target_link_libraries(log_selftest PRIVATE
+    log
+    pthread
+)
