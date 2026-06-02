@@ -29,6 +29,22 @@ public:
         return true;
     }
 
+    // P operation with timeout: wait for a resource with a timeout, return false if timeout or shutdown
+    bool timewait(int time_ms)
+    {
+        std::unique_lock<std::mutex> lock(m_mutex);
+        // wait until there is at least one resource available or timeout
+        bool acquired = m_cv.wait_for(lock, std::chrono::milliseconds(time_ms), [this]()
+                                      { return m_count > 0 || m_shutdown; });
+        if (!acquired || m_shutdown)
+        {
+            return false; // if timeout or shutdown, return false to indicate failure
+        }
+        // get resource successfully, m_count - 1
+        m_count--;
+        return true;
+    }
+
     // V operation: release and give back resource
     void post()
     {
