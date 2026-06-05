@@ -10,7 +10,7 @@ This is a self-developed C++ Web server based on the Linux system, which impleme
 ├── docs/                # 模块技术说明文档
 ├── include/             # 全局对外头文件（按模块划分）
 ├── resources/           # 前端静态资源（HTML/CSS/JS）
-├── scripts/             # 辅助脚本
+├── scripts/             # 模块的单元测试辅助脚本
 ├── src/                 # 服务端源码
 │   ├── main.cpp         # 程序入口
 │   ├── concurrency/     # 线程池/协程池与并发控制

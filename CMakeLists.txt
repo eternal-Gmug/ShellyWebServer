@@ -91,3 +91,33 @@ target_link_libraries(log_selftest PRIVATE
     log
     pthread
 )
+
+add_executable(timer_manager_selftest
+    scripts/timer_manager_selftest.cpp
+)
+
+target_include_directories(timer_manager_selftest PRIVATE
+    ${INCLUDE_DIR}
+    ${SRC_DIR}
+)
+
+target_link_libraries(timer_manager_selftest PRIVATE
+    timer
+    log
+    pthread
+)
+
+add_executable(signal_selftest
+    scripts/signal_selftest.cpp
+)
+
+target_include_directories(signal_selftest PRIVATE
+    ${INCLUDE_DIR}
+    ${SRC_DIR}
+)
+
+target_link_libraries(signal_selftest PRIVATE
+    utils
+    log
+    pthread
+)
