@@ -27,11 +27,13 @@ public:
 
 private:
     connection_pool(); // private constructor for singleton pattern
+public:
     ~connection_pool()
     {
         DestroyPool();
         reserve.reset();
     } // destructor to clean up resources
+private:
 
     MYSQL *createConnection(); // create a single MySQL connection with retry logic
 
